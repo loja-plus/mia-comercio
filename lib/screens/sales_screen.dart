@@ -12,6 +12,9 @@ import 'home_shell.dart';
 
 const methods = ['cash', 'card', 'transfer', 'credit'];
 
+/// Formas de pagamento na venda: inclui "parte agora, resto fiado".
+const saleMethods = ['cash', 'card', 'transfer', 'credit', 'partial'];
+
 class SalesScreen extends StatelessWidget {
   const SalesScreen({super.key});
   @override
@@ -19,7 +22,7 @@ class SalesScreen extends StatelessWidget {
     final app = context.watch<AppState>();
     final s = app.s;
     final today = app.salesOn(DateTime.now());
-    final byMethod = {for (final m in methods) m: today.where((x) => x.method == m).fold<int>(0, (a, x) => a + x.total)};
+    final byMethod = app.todayByMethod; // vendas pagas na hora (e a parte paga das vendas parciais)
     return PageScaffold(
       title: s.t('sales'),
       subtitle: '${s.t('today')} · ${today.length} · ${kz(app.todayTotal)}',
@@ -45,7 +48,7 @@ class SaleTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final s = context.read<AppState>().s;
-    final items = sale.lines.map((l) => '${l.qty}× ${l.name}').join(', ');
+    final items = sale.lines.map(lineLabel).join(', ');
     return ListTile(
       contentPadding: EdgeInsets.zero,
       title: Text('#${sale.number} · ${sale.customerName}', style: const TextStyle(fontWeight: FontWeight.w600)),
@@ -53,10 +56,17 @@ class SaleTile extends StatelessWidget {
       trailing: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
         Text(kz(sale.total), style: const TextStyle(fontWeight: FontWeight.w600)),
         const SizedBox(height: 2),
-        Pill(s.t(sale.method), sale.method == 'credit' ? Sev.warn : Sev.ok),
+        Pill(s.t(sale.method), sale.method == 'credit' || sale.method == 'partial' ? Sev.warn : Sev.ok),
       ]),
     );
   }
+}
+
+/// "3× Arroz", "2,5 kg Carne de vaca", "Caixa 18,4 kg Frango".
+String lineLabel(SaleLine l) {
+  if (!l.byWeight) return '${fmtQty(l.qty)}× ${l.name}';
+  if (l.box != null) return 'Cx ${fmtQty(l.qty, 'kg')} ${l.name}';
+  return '${fmtQty(l.qty, 'kg')} ${l.name}';
 }
 
 Future<void> openNewSale(BuildContext context) => showModalBottomSheet(
@@ -67,9 +77,13 @@ Future<void> openNewSale(BuildContext context) => showModalBottomSheet(
     );
 
 class _Line {
-  _Line(this.product, this.qty);
+  _Line(this.product, this.qty, {this.box});
   Product product;
-  int qty;
+  double qty; // unidades ou kg
+  final MeatBox? box; // caixa inteira (produtos ao peso)
+
+  int get price => box != null ? product.wholeBoxPrice : product.price;
+  int get total => (qty * price).round();
 }
 
 class _NewSaleSheet extends StatefulWidget {
@@ -84,18 +98,109 @@ class _NewSaleSheetState extends State<_NewSaleSheet> {
   String _method = 'cash';
   DateTime _due = DateTime.now().add(const Duration(days: 7));
   bool _busy = false;
+  final _paidNow = TextEditingController();
+  String _paidMethod = 'cash';
 
-  int get _total => _lines.fold(0, (a, l) => a + l.product.price * l.qty);
+  int get _paidNowValue => int.tryParse(_paidNow.text.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0;
 
-  void _add(Product p) {
+  int get _total => _lines.fold(0, (a, l) => a + l.total);
+
+  /// Quanto deste produto já está no carrinho (unidades ou kg).
+  double _inCart(Product p) => _lines.where((l) => l.product.id == p.id).fold(0.0, (a, l) => a + l.qty);
+
+  Future<void> _add(Product p) async {
+    if (p.byWeight) {
+      final line = await _askWeight(p);
+      if (line != null && mounted) setState(() => _lines.add(line));
+      return;
+    }
     setState(() {
       final existing = _lines.where((l) => l.product.id == p.id);
       if (existing.isNotEmpty) {
-        existing.first.qty++;
+        if (existing.first.qty < p.qty) existing.first.qty++;
       } else {
         _lines.add(_Line(p, 1));
       }
     });
+  }
+
+  /// Produto ao peso: vender uma caixa inteira ou uma quantidade em kg.
+  Future<_Line?> _askWeight(Product p) {
+    final s = context.read<AppState>().s;
+    final used = _lines.where((l) => l.box != null).map((l) => l.box!.id).toSet();
+    final freeBoxes = p.boxesByExpiry.where((b) => !used.contains(b.id)).toList();
+    final available = p.qty - _inCart(p);
+    final kgCtrl = TextEditingController();
+    var wholeBox = freeBoxes.isNotEmpty;
+    MeatBox? chosen;
+    return showDialog<_Line>(
+      context: context,
+      builder: (c) => StatefulBuilder(builder: (c, set) {
+        final kg = parseNum(kgCtrl.text) ?? 0;
+        final ok = wholeBox ? chosen != null : (kg > 0 && kg <= available + 0.0005);
+        final preview = wholeBox
+            ? (chosen == null ? 0 : (chosen!.kg * p.wholeBoxPrice).round())
+            : (kg * p.price).round();
+        return AlertDialog(
+          title: Text(p.name),
+          content: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('${s.t('inStockLabel')}: ${fmtQty(p.qty, 'kg')} · ${p.boxCount} ${s.t('boxesWord')}'),
+              const SizedBox(height: 12),
+              SegmentedButton<bool>(
+                segments: [
+                  ButtonSegment(value: true, label: Text(s.t('wholeBox')), enabled: freeBoxes.isNotEmpty),
+                  ButtonSegment(value: false, label: Text(s.t('byKg'))),
+                ],
+                selected: {wholeBox},
+                onSelectionChanged: (v) => set(() => wholeBox = v.first),
+              ),
+              const SizedBox(height: 12),
+              if (wholeBox) ...[
+                Text(s.t('chooseBox'), style: const TextStyle(fontSize: 13)),
+                const SizedBox(height: 8),
+                Wrap(spacing: 8, runSpacing: 8, children: [
+                  for (final b in freeBoxes)
+                    ChoiceChip(
+                      label: Text([
+                        fmtQty(b.kg, 'kg'),
+                        if (b.exp != null) fmtDate(b.exp!, s.lang),
+                      ].join(' · ')),
+                      selected: chosen?.id == b.id,
+                      onSelected: (_) => set(() => chosen = b),
+                    ),
+                ]),
+                const SizedBox(height: 8),
+                Text('${kz(p.wholeBoxPrice)}/kg'),
+              ] else ...[
+                TextField(
+                  controller: kgCtrl,
+                  autofocus: true,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  onChanged: (_) => set(() {}),
+                  decoration: InputDecoration(
+                    labelText: s.t('kgAmount'),
+                    suffixText: 'kg',
+                    helperText: '${kz(p.price)}/kg · máx. ${fmtQty(available, 'kg')}',
+                  ),
+                ),
+              ],
+              const SizedBox(height: 12),
+              Text('${s.t('total')}: ${kz(preview)}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+            ]),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(c), child: Text(s.t('cancel'))),
+            FilledButton(
+              onPressed: !ok
+                  ? null
+                  : () => Navigator.pop(c, wholeBox ? _Line(p, chosen!.kg, box: chosen) : _Line(p, kg)),
+              child: Text(s.t('addLine')),
+            ),
+          ],
+        );
+      }),
+    );
   }
 
   Future<void> _scan(AppState app) async {
@@ -122,13 +227,23 @@ class _NewSaleSheetState extends State<_NewSaleSheet> {
         customer: _customer,
         walkInLabel: s.t('walkIn'),
         lines: _lines
-            .map((l) => SaleLine(productId: l.product.id, name: l.product.name, qty: l.qty, price: l.product.price, cost: l.product.cost))
+            .map((l) => SaleLine(
+                  productId: l.product.id,
+                  name: l.product.name,
+                  qty: l.qty,
+                  price: l.price,
+                  cost: l.product.cost,
+                  unit: l.product.unit,
+                  box: l.box,
+                ))
             .toList(),
         method: _method,
         sellerId: app.user?.uid ?? '',
-        stockNow: {for (final p in app.products) p.id: p.qty},
+        productsNow: {for (final p in app.products) p.id: p},
         lastNumber: app.lastSaleNumber,
         creditDue: _due,
+        paidNow: _paidNowValue,
+        paidMethod: _paidMethod,
       );
       if (!mounted) return;
       final messenger = ScaffoldMessenger.of(context);
@@ -152,7 +267,7 @@ class _NewSaleSheetState extends State<_NewSaleSheet> {
     final text = app
         .tx('tmplReceipt')
         .replaceAll('{n}', '${sale.number}')
-        .replaceAll('{linhas}', sale.lines.map((l) => '${l.qty}× ${l.name} — ${kz(l.total)}').join('\n'))
+        .replaceAll('{linhas}', sale.lines.map((l) => '${lineLabel(l)} — ${kz(l.total)}').join('\n'))
         .replaceAll('{total}', kz(sale.total));
     launchUrl(Uri.parse('https://wa.me/${waNumber(phone)}?text=${Uri.encodeComponent(text)}'),
         mode: LaunchMode.externalApplication);
@@ -164,10 +279,12 @@ class _NewSaleSheetState extends State<_NewSaleSheet> {
     final s = app.s;
     final realCustomers = app.customers;
     final overLimit = _customer != null &&
-        _method == 'credit' &&
+        (_method == 'credit' || _method == 'partial') &&
         _customer!.creditLimit > 0 &&
-        app.owedBy(_customer!.id) + _total > _customer!.creditLimit;
-    final canSave = _lines.isNotEmpty && !_busy && (_method != 'credit' || _customer != null);
+        app.owedBy(_customer!.id) + (_method == 'partial' ? _total - _paidNowValue : _total) > _customer!.creditLimit;
+    final onCredit = _method == 'credit' || _method == 'partial';
+    final partialOk = _method != 'partial' || (_paidNowValue > 0 && _paidNowValue < _total);
+    final canSave = _lines.isNotEmpty && !_busy && (!onCredit || _customer != null) && partialOk;
 
     return Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
@@ -209,10 +326,22 @@ class _NewSaleSheetState extends State<_NewSaleSheet> {
             ]),
             const SizedBox(height: 8),
             for (final l in _lines)
+              if (l.product.byWeight)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(l.product.name),
+                  subtitle: Text(
+                      '${l.box != null ? '${s.t('wholeBox')} · ' : ''}${fmtQty(l.qty, 'kg')} × ${kz(l.price)}/kg'),
+                  trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Text(kz(l.total), style: const TextStyle(fontWeight: FontWeight.w600)),
+                    IconButton(onPressed: () => setState(() => _lines.remove(l)), icon: const Icon(Icons.delete_outline)),
+                  ]),
+                )
+              else
               ListTile(
                 contentPadding: EdgeInsets.zero,
                 title: Text(l.product.name),
-                subtitle: Text('${kz(l.product.price)} · ${l.product.qty} ${s.t('stock').toLowerCase()}'),
+                subtitle: Text('${kz(l.product.price)} · ${fmtQty(l.product.qty)} ${s.t('stock').toLowerCase()}'),
                 trailing: Row(mainAxisSize: MainAxisSize.min, children: [
                   IconButton(
                       onPressed: () => setState(() {
@@ -223,7 +352,7 @@ class _NewSaleSheetState extends State<_NewSaleSheet> {
                             }
                           }),
                       icon: const Icon(Icons.remove_circle_outline)),
-                  Text('${l.qty}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                  Text(fmtQty(l.qty), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
                   IconButton(
                       onPressed: l.qty < l.product.qty ? () => setState(() => l.qty++) : null,
                       icon: const Icon(Icons.add_circle_outline)),
@@ -231,10 +360,32 @@ class _NewSaleSheetState extends State<_NewSaleSheet> {
               ),
             const Divider(),
             Wrap(spacing: 8, runSpacing: 8, children: [
-              for (final m in methods)
+              for (final m in saleMethods)
                 ChoiceChip(label: Text(s.t(m)), selected: _method == m, onSelected: (_) => setState(() => _method = m)),
             ]),
-            if (_method == 'credit') ...[
+            if (_method == 'partial') ...[
+              const SizedBox(height: 12),
+              TextField(
+                controller: _paidNow,
+                keyboardType: TextInputType.number,
+                onChanged: (_) => setState(() {}),
+                decoration: InputDecoration(
+                  labelText: s.t('paidNowLabel'),
+                  helperText: _paidNowValue > 0 && _paidNowValue < _total
+                      ? '${s.t('stillOwes')}: ${kz(_total - _paidNowValue)}'
+                      : null,
+                  errorText: _paidNowValue >= _total && _total > 0 ? s.t('partialTooMuch') : null,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Wrap(spacing: 8, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
+                Text(s.t('paidHow')),
+                for (final m in const ['cash', 'card', 'transfer'])
+                  ChoiceChip(
+                      label: Text(s.t(m)), selected: _paidMethod == m, onSelected: (_) => setState(() => _paidMethod = m)),
+              ]),
+            ],
+            if (onCredit) ...[
               const SizedBox(height: 12),
               OutlinedButton.icon(
                 onPressed: _pickDue,

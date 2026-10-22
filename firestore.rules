@@ -51,9 +51,9 @@ service cloud.firestore {
       match /products/{id} {
         allow read: if isStaff();
         allow create, delete: if isOwner();
-        // o caixa só pode descontar stock (ao vender)
+        // o caixa só pode descontar stock (ao vender): unidades, kg soltos e caixas
         allow update: if isOwner() ||
-          (isStaff() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['qty'])
+          (isStaff() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['qty', 'looseKg', 'boxes'])
                      && request.resource.data.qty < resource.data.qty);
       }
       match /customers/{id} {
@@ -67,7 +67,12 @@ service cloud.firestore {
       match /bills/{id} {
         allow read: if isOwner() || (isStaff() && resource.data.kind == 'receivable');
         allow create: if isOwner() || (isStaff() && request.resource.data.kind == 'receivable');
-        allow update, delete: if isOwner();
+        // o caixa pode registar pagamentos de clientes (só aumentar o pago); datas e valores só o proprietário
+        allow update: if isOwner() ||
+          (isStaff() && resource.data.kind == 'receivable'
+                     && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['paidAmount', 'status', 'paidAt', 'payments'])
+                     && request.resource.data.paidAmount > resource.data.paidAmount);
+        allow delete: if isOwner();
       }
       match /outbox/{id} {
         allow read, create: if isOwner();

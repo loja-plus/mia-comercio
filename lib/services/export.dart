@@ -18,13 +18,24 @@ class ExportService {
 
     TextCellValue t(Object? v) => TextCellValue(v?.toString() ?? '');
     IntCellValue n(int v) => IntCellValue(v);
+    DoubleCellValue d(double v) => DoubleCellValue(v);
     void header(Sheet sh, List<String> cols) => sh.appendRow(cols.map(t).toList());
 
     final prod = x['Produtos'];
-    header(prod, ['Nome', 'Categoria', 'Código de barras', 'Quantidade', 'Mínimo', 'Custo (Kz)', 'Preço (Kz)', 'Validade']);
+    header(prod, ['Nome', 'Categoria', 'Código de barras', 'Unidade', 'Quantidade', 'Caixas fechadas', 'Kg soltos',
+      'Mínimo', 'Custo (Kz)', 'Preço (Kz)', 'Validade mais próxima']);
     for (final p in app.products) {
-      prod.appendRow([t(p.name), t(p.category), t(p.barcode), n(p.qty), n(p.minQty), n(p.cost), n(p.price),
-        t(p.expiry == null ? '' : DateFormat('yyyy-MM-dd').format(p.expiry!))]);
+      prod.appendRow([t(p.name), t(p.category), t(p.barcode), t(p.unit), d(p.qty), n(p.boxCount), d(p.looseKg),
+        d(p.minQty), n(p.cost), n(p.price),
+        t(p.nextExpiry == null ? '' : DateFormat('yyyy-MM-dd').format(p.nextExpiry!))]);
+    }
+
+    final boxes = x['Caixas'];
+    header(boxes, ['Produto', 'Peso (kg)', 'Validade']);
+    for (final p in app.products.where((p) => p.byWeight)) {
+      for (final b in p.boxesByExpiry) {
+        boxes.appendRow([t(p.name), d(b.kg), t(b.exp == null ? '' : DateFormat('yyyy-MM-dd').format(b.exp!))]);
+      }
     }
 
     final cust = x['Clientes'];
@@ -35,11 +46,12 @@ class ExportService {
     }
 
     final sales = x['Vendas'];
-    header(sales, ['Nº', 'Data', 'Cliente', 'Pagamento', 'Produto', 'Qtd', 'Preço (Kz)', 'Total linha (Kz)', 'Lucro linha (Kz)']);
+    header(sales, ['Nº', 'Data', 'Cliente', 'Pagamento', 'Produto', 'Qtd', 'Unidade', 'Caixa inteira', 'Preço (Kz)',
+      'Total linha (Kz)', 'Lucro linha (Kz)']);
     for (final v in await Db.I.allSales()) {
       for (final l in v.lines) {
-        sales.appendRow([n(v.number), t(_d.format(v.at)), t(v.customerName), t(v.method), t(l.name), n(l.qty),
-          n(l.price), n(l.total), n(l.profit)]);
+        sales.appendRow([n(v.number), t(_d.format(v.at)), t(v.customerName), t(v.method), t(l.name), d(l.qty),
+          t(l.unit), t(l.box != null ? 'Sim' : ''), n(l.price), n(l.total), n(l.profit)]);
       }
     }
 

@@ -7,6 +7,7 @@ import '../services/format.dart';
 import '../state/app_state.dart';
 import '../widgets/alerts.dart';
 import '../widgets/common.dart';
+import '../widgets/payment_dialogs.dart';
 import 'home_shell.dart';
 
 class AccountsScreen extends StatefulWidget {
@@ -95,13 +96,18 @@ class _BillRow extends StatelessWidget {
       );
     }
     final partial = b.paidAmount > 0 ? ' · ${s.t('partial')}: ${kz(b.paidAmount)}' : '';
+    final moved = dueMovedText(b, s.lang, s.t('dueMovedFrom'));
     return StripeTile(
       sev: dueSev(b.due),
       title: b.party,
-      subtitle: '${b.note.isEmpty ? '' : '${b.note} · '}${s.t('due')} ${dueText(b.due, s)}$partial',
+      subtitle: '${b.note.isEmpty ? '' : '${b.note} · '}${s.t('due')} ${dueText(b.due, s)}$moved$partial',
       trailing: Row(mainAxisSize: MainAxisSize.min, children: [
         Text(kz(b.remaining), style: const TextStyle(fontWeight: FontWeight.w600)),
-        const SizedBox(width: 8),
+        IconButton(
+          tooltip: s.t('changeDue'),
+          icon: const Icon(Icons.edit_calendar_outlined),
+          onPressed: () => changeDueDialog(context, b),
+        ),
         FilledButton.tonal(
           onPressed: () => _registerPayment(context, b),
           child: Text(b.isReceivable ? s.t('markReceived') : s.t('markPaid')),
@@ -112,29 +118,9 @@ class _BillRow extends StatelessWidget {
 }
 
 Future<void> _registerPayment(BuildContext context, Bill b) async {
-  final s = context.read<AppState>().s;
-  final ctrl = TextEditingController(text: '${b.remaining}');
-  final value = await showDialog<int>(
-    context: context,
-    builder: (c) => AlertDialog(
-      title: Text(b.party),
-      content: TextField(
-        controller: ctrl,
-        keyboardType: TextInputType.number,
-        autofocus: true,
-        decoration: InputDecoration(labelText: s.t('amount'), helperText: '${s.t('total')}: ${kz(b.remaining)}'),
-      ),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(c), child: Text(s.t('cancel'))),
-        FilledButton(
-          onPressed: () => Navigator.pop(c, int.tryParse(ctrl.text.replaceAll(RegExp(r'[^0-9]'), ''))),
-          child: Text(s.t('save')),
-        ),
-      ],
-    ),
-  );
-  if (value == null || value <= 0) return;
-  await Db.I.registerPayment(b, value);
+  final r = await askPayment(context, title: b.party, max: b.remaining);
+  if (r == null) return;
+  await Db.I.registerPayment(b, r.$1, method: r.$2);
 }
 
 Future<void> _openBillForm(BuildContext context, String kind) => showModalBottomSheet(

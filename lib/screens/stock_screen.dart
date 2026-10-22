@@ -108,6 +108,10 @@ class _ProductRow extends StatelessWidget {
     final s = context.read<AppState>().s;
     final n = p.daysToExpiry(DateTime.now());
     final ratio = p.minQty == 0 ? 1.0 : (p.qty / (p.minQty * 3)).clamp(0.0, 1.0);
+    final info = p.byWeight
+        ? '${p.boxCount} ${s.t('boxesWord')} · ${fmtQty(p.qty, 'kg')}'
+            '${p.looseKg > 0 ? ' (${fmtQty(p.looseKg, 'kg')} ${s.t('looseWord')})' : ''} · ${kz(p.price)}/kg'
+        : '${fmtQty(p.qty)} un. · ${kz(p.price)}';
     return ListTile(
       onTap: canEdit ? () => openProductForm(context, product: p) : null,
       title: Text(p.name, style: const TextStyle(fontWeight: FontWeight.w600)),
@@ -124,15 +128,22 @@ class _ProductRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 10),
-          Flexible(child: Text('${p.qty} un. · ${kz(p.price)}', overflow: TextOverflow.ellipsis)),
+          Flexible(child: Text(info, overflow: TextOverflow.ellipsis, maxLines: 2)),
         ]),
       ),
-      trailing: n == null
-          ? null
-          : Pill(
-              n < 0 ? s.t('expired') : fmtDate(p.expiry!, s.lang),
-              n <= 7 ? Sev.bad : (n <= 30 ? Sev.warn : Sev.ok),
-            ),
+      trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+        if (n != null)
+          Pill(
+            n < 0 ? s.t('expired') : fmtDate(p.nextExpiry!, s.lang),
+            n <= 7 ? Sev.bad : (n <= 30 ? Sev.warn : Sev.ok),
+          ),
+        if (canEdit)
+          IconButton(
+            tooltip: p.byWeight ? s.t('receiveBoxes') : s.t('receive'),
+            icon: const Icon(Icons.add_box_outlined),
+            onPressed: () => openReceive(context, p),
+          ),
+      ]),
     );
   }
 }
@@ -153,33 +164,42 @@ class _ProductForm extends StatefulWidget {
 
 class _ProductFormState extends State<_ProductForm> {
   final _form = GlobalKey<FormState>();
-  late final _name = TextEditingController(text: widget.product?.name);
-  late final _cat = TextEditingController(text: widget.product?.category ?? 'Mercearia');
-  late final _code = TextEditingController(text: widget.product?.barcode);
-  late final _qty = TextEditingController(text: '${widget.product?.qty ?? ''}');
-  late final _min = TextEditingController(text: '${widget.product?.minQty ?? 5}');
-  late final _cost = TextEditingController(text: '${widget.product?.cost ?? ''}');
-  late final _price = TextEditingController(text: '${widget.product?.price ?? ''}');
-  late DateTime? _exp = widget.product?.expiry;
-  late bool _announce = widget.product == null;
+  Product? get _old => widget.product;
+  late final _name = TextEditingController(text: _old?.name);
+  late final _cat = TextEditingController(text: _old?.category ?? 'Mercearia');
+  late final _code = TextEditingController(text: _old?.barcode);
+  late final _qty = TextEditingController(text: _old == null ? '' : plainNum(_old!.byWeight ? _old!.looseKg : _old!.qty));
+  late final _min = TextEditingController(text: plainNum(_old?.minQty ?? 5));
+  late final _cost = TextEditingController(text: '${_old?.cost ?? ''}');
+  late final _price = TextEditingController(text: '${_old?.price ?? ''}');
+  late final _boxPrice = TextEditingController(text: (_old?.boxPrice ?? 0) > 0 ? '${_old!.boxPrice}' : '');
+  late DateTime? _exp = _old?.expiry;
+  late String _unit = _old?.unit ?? 'un';
+  late bool _announce = _old == null;
 
-  int _n(TextEditingController c) => int.tryParse(c.text.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0;
+  int _int(TextEditingController c) => int.tryParse(c.text.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0;
+  double _dec(TextEditingController c) => parseNum(c.text) ?? 0;
 
   Future<void> _save(AppState app) async {
     if (!_form.currentState!.validate()) return;
+    final kg = _unit == 'kg';
     final p = Product(
-      id: widget.product?.id ?? '',
+      id: _old?.id ?? '',
       name: _name.text.trim(),
       category: _cat.text.trim(),
       barcode: _code.text.trim(),
-      qty: _n(_qty),
-      minQty: _n(_min),
-      cost: _n(_cost),
-      price: _n(_price),
+      unit: _unit,
+      qty: kg ? (_old?.qty ?? 0) : _dec(_qty),
+      looseKg: kg ? _dec(_qty) : 0,
+      minQty: _dec(_min),
+      cost: _int(_cost),
+      price: _int(_price),
+      boxPrice: kg ? _int(_boxPrice) : 0,
+      boxes: _old?.boxes ?? const [],
       expiry: _exp,
     );
     final nav = Navigator.of(context);
-    await Db.I.saveProduct(p);
+    await Db.I.saveProduct(p, old: _old);
     nav.pop();
     // Plano gratuito: abre o ecrã de anúncio já preenchido; a pessoa envia com um toque.
     if (_announce && app.isOwner) {
@@ -193,12 +213,14 @@ class _ProductFormState extends State<_ProductForm> {
   Widget build(BuildContext context) {
     final app = context.read<AppState>();
     final s = app.s;
+    final kg = _unit == 'kg';
     String? req(String? v) => (v == null || v.trim().isEmpty) ? '!' : null;
-    Widget numField(TextEditingController c, String label) => TextFormField(
+    Widget numField(TextEditingController c, String label, {bool required = true, bool decimal = false, String? help}) =>
+        TextFormField(
           controller: c,
-          keyboardType: TextInputType.number,
-          decoration: InputDecoration(labelText: label),
-          validator: req,
+          keyboardType: TextInputType.numberWithOptions(decimal: decimal),
+          decoration: InputDecoration(labelText: label, helperText: help, helperMaxLines: 2),
+          validator: required ? req : null,
         );
 
     return Padding(
@@ -206,10 +228,22 @@ class _ProductFormState extends State<_ProductForm> {
       child: Form(
         key: _form,
         child: ListView(shrinkWrap: true, padding: const EdgeInsets.all(20), children: [
-          Text(widget.product == null ? s.t('addProduct') : s.t('editProduct'),
+          Text(_old == null ? s.t('addProduct') : s.t('editProduct'),
               style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
           const SizedBox(height: 16),
           TextFormField(controller: _name, decoration: InputDecoration(labelText: s.t('product')), validator: req),
+          const SizedBox(height: 12),
+          Text(s.t('sellBy'), style: const TextStyle(fontSize: 13)),
+          const SizedBox(height: 6),
+          SegmentedButton<String>(
+            segments: [
+              ButtonSegment(value: 'un', label: Text(s.t('unitUn')), icon: const Icon(Icons.inventory_2_outlined)),
+              ButtonSegment(value: 'kg', label: Text(s.t('unitKg')), icon: const Icon(Icons.scale_outlined)),
+            ],
+            selected: {_unit},
+            // O tipo só se escolhe ao criar (mudar depois baralharia o stock).
+            onSelectionChanged: _old == null ? (v) => setState(() => _unit = v.first) : null,
+          ),
           const SizedBox(height: 12),
           Row(children: [
             Expanded(child: TextFormField(controller: _cat, decoration: InputDecoration(labelText: s.t('category')))),
@@ -231,17 +265,25 @@ class _ProductFormState extends State<_ProductForm> {
             ),
           ]),
           const SizedBox(height: 12),
-          Row(children: [
-            Expanded(child: numField(_qty, s.t('qty'))),
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Expanded(
+              child: kg
+                  ? numField(_qty, s.t('looseKgLabel'), required: false, decimal: true, help: s.t('boxesHelp'))
+                  : numField(_qty, s.t('qty'), decimal: true),
+            ),
             const SizedBox(width: 12),
-            Expanded(child: numField(_min, s.t('minQty'))),
+            Expanded(child: numField(_min, kg ? s.t('minKg') : s.t('minQty'), decimal: true)),
           ]),
           const SizedBox(height: 12),
           Row(children: [
-            Expanded(child: numField(_cost, s.t('cost'))),
+            Expanded(child: numField(_cost, kg ? s.t('costKg') : s.t('cost'))),
             const SizedBox(width: 12),
-            Expanded(child: numField(_price, s.t('price'))),
+            Expanded(child: numField(_price, kg ? s.t('priceKg') : s.t('price'))),
           ]),
+          if (kg) ...[
+            const SizedBox(height: 12),
+            numField(_boxPrice, s.t('boxPriceLabel'), required: false),
+          ],
           const SizedBox(height: 12),
           OutlinedButton.icon(
             icon: const Icon(Icons.event),
@@ -265,13 +307,13 @@ class _ProductFormState extends State<_ProductForm> {
             ),
           const SizedBox(height: 12),
           Row(children: [
-            if (widget.product != null)
+            if (_old != null)
               TextButton(
                 onPressed: () async {
-                  final ok = await confirmDialog(context, '${s.t('delete')}: ${widget.product!.name}?',
+                  final ok = await confirmDialog(context, '${s.t('delete')}: ${_old!.name}?',
                       ok: s.t('delete'), cancel: s.t('cancel'));
                   if (!ok) return;
-                  await Db.I.deleteProduct(widget.product!.id);
+                  await Db.I.deleteProduct(_old!.id);
                   if (context.mounted) Navigator.pop(context);
                 },
                 child: Text(s.t('delete'), style: TextStyle(color: Theme.of(context).colorScheme.error)),
@@ -283,6 +325,132 @@ class _ProductFormState extends State<_ProductForm> {
           ]),
         ]),
       ),
+    );
+  }
+}
+
+/// Entrada de mercadoria: caixas com o peso de cada uma (ao peso) ou unidades.
+Future<void> openReceive(BuildContext context, Product p) => showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => _ReceiveSheet(p: p),
+    );
+
+class _ReceiveSheet extends StatefulWidget {
+  const _ReceiveSheet({required this.p});
+  final Product p;
+  @override
+  State<_ReceiveSheet> createState() => _ReceiveSheetState();
+}
+
+class _ReceiveSheetState extends State<_ReceiveSheet> {
+  final _weights = <TextEditingController>[TextEditingController()];
+  final _units = TextEditingController();
+  late final _cost = TextEditingController(text: widget.p.cost > 0 ? '${widget.p.cost}' : '');
+  DateTime? _exp;
+
+  List<double> get _kgs => _weights.map((c) => parseNum(c.text) ?? 0).where((v) => v > 0).toList();
+
+  @override
+  Widget build(BuildContext context) {
+    final s = context.read<AppState>().s;
+    final p = widget.p;
+    final total = _kgs.fold<double>(0, (a, b) => a + b);
+    final ok = p.byWeight ? _kgs.isNotEmpty : (parseNum(_units.text) ?? 0) > 0;
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+      child: ListView(shrinkWrap: true, padding: const EdgeInsets.all(20), children: [
+        Text('${p.byWeight ? s.t('receiveBoxes') : s.t('receive')} · ${p.name}',
+            style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
+        const SizedBox(height: 16),
+        if (p.byWeight) ...[
+          Text(s.t('boxWeightsHelp'), style: const TextStyle(fontSize: 13)),
+          const SizedBox(height: 10),
+          for (var i = 0; i < _weights.length; i++)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(children: [
+                Expanded(
+                  child: TextField(
+                    controller: _weights[i],
+                    autofocus: i == _weights.length - 1,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    textInputAction: TextInputAction.next,
+                    onChanged: (_) => setState(() {}),
+                    onSubmitted: (_) => setState(() => _weights.add(TextEditingController())),
+                    decoration: InputDecoration(labelText: '${s.t('box')} ${i + 1}', suffixText: 'kg', isDense: true),
+                  ),
+                ),
+                if (_weights.length > 1)
+                  IconButton(
+                    onPressed: () => setState(() => _weights.removeAt(i)),
+                    icon: const Icon(Icons.close),
+                  ),
+              ]),
+            ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: () => setState(() => _weights.add(TextEditingController())),
+              icon: const Icon(Icons.add),
+              label: Text(s.t('addBox')),
+            ),
+          ),
+          Text('${_kgs.length} ${s.t('boxesWord')} · ${fmtQty(total, 'kg')}',
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            icon: const Icon(Icons.event),
+            label: Text(_exp == null ? s.t('noExpiry') : '${s.t('expiry')}: ${fmtDate(_exp!, s.lang)}'),
+            onPressed: () async {
+              final d = await showDatePicker(
+                context: context,
+                initialDate: _exp ?? DateTime.now().add(const Duration(days: 30)),
+                firstDate: DateTime(2020),
+                lastDate: DateTime(2040),
+              );
+              if (d != null) setState(() => _exp = d);
+            },
+          ),
+        ] else
+          TextField(
+            controller: _units,
+            autofocus: true,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            onChanged: (_) => setState(() {}),
+            decoration: InputDecoration(labelText: s.t('qty')),
+          ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _cost,
+          keyboardType: TextInputType.number,
+          decoration: InputDecoration(labelText: p.byWeight ? s.t('costKg') : s.t('cost')),
+        ),
+        const SizedBox(height: 16),
+        Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+          TextButton(onPressed: () => Navigator.pop(context), child: Text(s.t('cancel'))),
+          const SizedBox(width: 8),
+          FilledButton(
+            onPressed: !ok
+                ? null
+                : () async {
+                    final cost = int.tryParse(_cost.text.replaceAll(RegExp(r'[^0-9]'), ''));
+                    final messenger = ScaffoldMessenger.of(context);
+                    final nav = Navigator.of(context);
+                    if (p.byWeight) {
+                      await Db.I.receiveBoxes(p, _kgs, exp: _exp, newCost: cost);
+                    } else {
+                      await Db.I.receiveUnits(p, parseNum(_units.text)!, newCost: cost);
+                    }
+                    nav.pop();
+                    messenger.showSnackBar(
+                        SnackBar(content: Text(s.t('received')), behavior: SnackBarBehavior.floating));
+                  },
+            child: Text(s.t('save')),
+          ),
+        ]),
+      ]),
     );
   }
 }

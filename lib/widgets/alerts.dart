@@ -24,14 +24,14 @@ List<AlertItem> buildAlerts(AppState app) {
     if (n != null && n <= 30 && p.qty > 0) {
       out.add(AlertItem(
         n <= 7 ? Sev.bad : Sev.warn,
-        p.expiry!,
+        p.nextExpiry!,
         p.name,
-        '${s.t('expiry')}: ${fmtDate(p.expiry!, s.lang)} · ${p.qty} un.',
+        '${s.t('expiry')}: ${fmtDate(p.nextExpiry!, s.lang)} · ${fmtQty(p.qty, p.unit)}',
         n < 0 ? s.t('expired') : s.t('expiresIn').replaceAll('{n}', '$n'),
       ));
     }
     if (p.isLow) {
-      out.add(AlertItem(Sev.warn, now, p.name, '${p.qty} / ${s.t('minQty')} ${p.minQty}', s.t('lowStock')));
+      out.add(AlertItem(Sev.warn, now, p.name, '${fmtQty(p.qty, p.unit)} / ${s.t('minQty')} ${fmtQty(p.minQty, p.unit)}', s.t('lowStock')));
     }
   }
   for (final b in app.bills.where((b) => b.isOpen)) {
@@ -47,7 +47,7 @@ List<AlertItem> buildAlerts(AppState app) {
   }
   if (app.isOwner) {
     for (final r in app.dueReminders) {
-      out.add(AlertItem(Sev.warn, r.at, s.t('notifSendReminder'), r.customer.name, kz(r.bill.remaining)));
+      out.add(AlertItem(Sev.warn, r.at, s.t('notifSendReminder'), r.customer.name, kz(r.remaining)));
     }
   }
   const rank = {Sev.bad: 0, Sev.warn: 1, Sev.info: 2, Sev.ok: 3};

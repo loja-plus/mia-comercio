@@ -157,7 +157,7 @@ class AppState extends ChangeNotifier {
 
   int get todayTotal => salesOn(DateTime.now()).fold(0, (a, x) => a + x.total);
   int get todayProfit => salesOn(DateTime.now()).fold(0, (a, x) => a + x.profit);
-  int get stockValue => products.fold(0, (a, p) => a + p.cost * p.qty);
+  int get stockValue => products.fold(0, (a, p) => a + (p.cost * p.qty).round());
   List<Bill> get openReceivables => bills.where((b) => b.isOpen && b.isReceivable).toList();
   List<Bill> get openPayables => bills.where((b) => b.isOpen && !b.isReceivable).toList();
   int sumRemaining(Iterable<Bill> l) => l.fold(0, (a, b) => a + b.remaining);
@@ -199,25 +199,41 @@ class AppState extends ChangeNotifier {
 
   bool _canMessage(Customer? c) => c != null && c.optIn && (c.phone.isNotEmpty || c.email.isNotEmpty);
 
-  /// Lembretes cuja hora já chegou e que ainda não foram enviados.
-  /// Por cliente/conta mostra só o mais recente, para não repetir mensagens.
+  /// Contas a receber em aberto de um cliente, a mais antiga primeiro.
+  List<Bill> openBillsOf(String customerId) =>
+      openReceivables.where((b) => b.partyId == customerId).toList()..sort((a, b) => a.due.compareTo(b.due));
+
+  /// Lembretes para enviar agora — UM por cliente, com o total de todas as contas dele.
+  /// Aparece quando chega a hora de lembrar alguma das contas, e fica na lista
+  /// (mesmo depois de enviado) até ser apagado ou a dívida ser paga.
   List<ReminderItem> get dueReminders {
     final now = DateTime.now();
-    final out = <ReminderItem>[];
+    final byCustomer = <String, List<Bill>>{};
     for (final b in openReceivables) {
-      final c = customerById(b.partyId);
-      if (!_canMessage(c)) continue;
-      final passed = reminderTimes(b).where((t) => !t.$2.isAfter(now)).toList();
-      if (passed.isEmpty) continue;
-      final keys = passed.map((t) => reminderKey(t.$1, t.$2)).toList();
-      if (b.remindersSent.contains(keys.last)) continue;
-      out.add(ReminderItem(bill: b, customer: c!, kind: passed.last.$1, at: passed.last.$2, keys: keys));
+      (byCustomer[b.partyId] ??= []).add(b);
     }
+    final out = <ReminderItem>[];
+    byCustomer.forEach((cid, bills) {
+      final c = customerById(cid);
+      if (!_canMessage(c)) return;
+      final keys = <String, List<String>>{};
+      DateTime? at;
+      for (final b in bills) {
+        final passed = reminderTimes(b).where((t) => !t.$2.isAfter(now)).toList();
+        if (passed.isEmpty) continue;
+        if (b.remindersSent.contains(reminderKey(passed.last.$1, passed.last.$2))) continue;
+        keys[b.id] = passed.map((t) => reminderKey(t.$1, t.$2)).toList();
+        if (at == null || passed.last.$2.isAfter(at)) at = passed.last.$2;
+      }
+      if (keys.isEmpty) return;
+      bills.sort((a, b) => a.due.compareTo(b.due));
+      out.add(ReminderItem(customer: c!, bills: bills, at: at!, keysByBill: keys));
+    });
     out.sort((a, b) => a.at.compareTo(b.at));
     return out;
   }
 
-  /// Próximos lembretes (ainda no futuro).
+  /// Próximos lembretes (ainda no futuro), por conta.
   List<ReminderItem> get upcomingReminders {
     final now = DateTime.now();
     final out = <ReminderItem>[];
@@ -226,7 +242,9 @@ class AppState extends ChangeNotifier {
       if (!_canMessage(c)) continue;
       for (final t in reminderTimes(b)) {
         if (t.$2.isAfter(now)) {
-          out.add(ReminderItem(bill: b, customer: c!, kind: t.$1, at: t.$2, keys: [reminderKey(t.$1, t.$2)]));
+          out.add(ReminderItem(customer: c!, bills: [b], at: t.$2, keysByBill: {
+            b.id: [reminderKey(t.$1, t.$2)]
+          }));
         }
       }
     }
@@ -234,15 +252,54 @@ class AppState extends ChangeNotifier {
     return out;
   }
 
-  /// Texto do lembrete de pagamento (modelo editável nas Definições).
-  String paymentText(Bill b) {
-    final c = customerById(b.partyId);
+  /// Texto do lembrete (modelo editável nas Definições), com o TOTAL em dívida.
+  /// Se houver várias contas, junta a lista por baixo.
+  String reminderText(Customer c, List<Bill> bills) {
+    final open = [...bills]..sort((a, b) => a.due.compareTo(b.due));
+    final total = open.fold<int>(0, (a, b) => a + b.remaining);
     final custom = (settings['templatePayment_$lang'] as String?) ?? s.t('tmplPay');
-    return custom
+    var text = custom
         .replaceAll('{loja}', shopName)
-        .replaceAll('{nome}', c?.greetName ?? b.party)
-        .replaceAll('{valor}', kz(b.remaining))
-        .replaceAll('{data}', fmtDate(b.due, lang));
+        .replaceAll('{nome}', c.greetName)
+        .replaceAll('{valor}', kz(total))
+        .replaceAll('{data}', open.isEmpty ? '' : fmtDate(open.first.due, lang));
+    if (open.length > 1) {
+      text += '\n\n${open.map((b) => '• ${b.note.isEmpty ? s.t('receivable') : b.note}: ${kz(b.remaining)} · '
+          '${s.t('due')} ${fmtDate(b.due, lang)}').join('\n')}';
+    }
+    return text;
+  }
+
+  /// Extrato do cliente para enviar por WhatsApp.
+  String statementText(Customer c) {
+    final open = openBillsOf(c.id);
+    final total = open.fold<int>(0, (a, b) => a + b.remaining);
+    final lines = open.map((b) => '• ${b.note.isEmpty ? s.t('receivable') : b.note}: ${kz(b.remaining)} · '
+        '${s.t('due')} ${fmtDate(b.due, lang)}');
+    return '${shopName} · ${s.t('statement')}\n${c.name}\n\n${lines.join('\n')}\n\n'
+        '${s.t('totalOwed')}: ${kz(total)}';
+  }
+
+  /// Dinheiro que entrou hoje por cada forma (vendas pagas na hora + pagamentos de dívidas).
+  Map<String, int> get todayByMethod {
+    final out = <String, int>{'cash': 0, 'card': 0, 'transfer': 0, 'credit': 0};
+    for (final x in salesOn(DateTime.now())) {
+      x.paidByMethod.forEach((m, v) => out[m] = (out[m] ?? 0) + v);
+    }
+    return out;
+  }
+
+  /// Pagamentos de dívidas recebidos hoje, por forma de pagamento.
+  Map<String, int> get todayDebtPayments {
+    final a = startOfDay(), out = <String, int>{};
+    for (final b in bills.where((b) => b.isReceivable)) {
+      for (final p in b.payments) {
+        if (p.at.isBefore(a)) continue;
+        final m = p.method.isEmpty ? 'cash' : p.method;
+        out[m] = (out[m] ?? 0) + p.value;
+      }
+    }
+    return out;
   }
 
   /// Regras de lembrete aos clientes (editáveis nas Definições).
@@ -257,10 +314,24 @@ class AppState extends ChangeNotifier {
 }
 
 class ReminderItem {
-  ReminderItem({required this.bill, required this.customer, required this.kind, required this.at, required this.keys});
-  final Bill bill;
+  ReminderItem({required this.customer, required this.bills, required this.at, required this.keysByBill});
   final Customer customer;
-  final String kind; // 'before' | 'due' | 'after'
+
+  /// Contas em aberto do cliente incluídas na mensagem (a mais antiga primeiro).
+  final List<Bill> bills;
   final DateTime at;
-  final List<String> keys; // chaves a marcar como enviadas
+
+  /// Chaves de horário a marcar como tratadas, por conta (ao apagar o lembrete).
+  final Map<String, List<String>> keysByBill;
+
+  Bill get bill => bills.first;
+  int get remaining => bills.fold(0, (a, b) => a + b.remaining);
+  int get remindCount => bills.fold(0, (a, b) => b.remindCount > a ? b.remindCount : a);
+  DateTime? get lastRemindedAt {
+    DateTime? last;
+    for (final b in bills) {
+      if (b.lastRemindedAt != null && (last == null || b.lastRemindedAt!.isAfter(last))) last = b.lastRemindedAt;
+    }
+    return last;
+  }
 }

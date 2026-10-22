@@ -2,6 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../models/models.dart';
 import '../services/accounts.dart';
 import '../services/db.dart';
 import '../services/export.dart';
@@ -70,7 +71,8 @@ class _CashCloseState extends State<_CashClose> {
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
     final s = app.s;
-    final expected = app.salesOn(DateTime.now()).where((x) => x.method == 'cash').fold<int>(0, (a, x) => a + x.total);
+    // Dinheiro esperado na caixa: vendas em dinheiro + parte paga em dinheiro + dívidas recebidas em dinheiro.
+    final expected = (app.todayByMethod['cash'] ?? 0) + (app.todayDebtPayments['cash'] ?? 0);
     final counted = int.tryParse(_counted.text.replaceAll(RegExp(r'[^0-9]'), ''));
     final diff = counted == null ? null : counted - expected;
     return Panel(
@@ -189,7 +191,8 @@ class _Reorder extends StatelessWidget {
     final app = context.watch<AppState>();
     final s = app.s;
     final low = app.products.where((p) => p.isLow).toList();
-    final total = low.fold<int>(0, (a, p) => a + (p.minQty * 3 - p.qty) * p.cost);
+    double need(Product p) => p.minQty * 3 - p.qty;
+    final total = low.fold<int>(0, (a, p) => a + (need(p) * p.cost).round());
     return Panel(
       title: s.t('reorder'),
       action: low.isEmpty ? null : Text(kz(total), style: const TextStyle(fontWeight: FontWeight.w600)),
@@ -200,8 +203,8 @@ class _Reorder extends StatelessWidget {
                 ListTile(
                   contentPadding: EdgeInsets.zero,
                   title: Text(p.name),
-                  subtitle: Text('${p.qty} / ${s.t('minQty')} ${p.minQty}'),
-                  trailing: Text('+${p.minQty * 3 - p.qty} · ${kz((p.minQty * 3 - p.qty) * p.cost)}'),
+                  subtitle: Text('${fmtQty(p.qty, p.unit)} / ${s.t('minQty')} ${fmtQty(p.minQty, p.unit)}'),
+                  trailing: Text('+${fmtQty(need(p), p.unit)} · ${kz((need(p) * p.cost).round())}'),
                 ),
             ]),
     );

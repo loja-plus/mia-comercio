@@ -64,10 +64,11 @@ class Notifier {
     final items = <(DateTime, String, String)>[];
 
     for (final p in products) {
-      if (p.expiry == null || p.qty <= 0) continue;
+      final exp = p.nextExpiry;
+      if (exp == null || p.qty <= 0) continue;
       for (final before in const [30, 7, 1]) {
-        final at = DateTime(p.expiry!.year, p.expiry!.month, p.expiry!.day - before, 8);
-        items.add((at, s.t('notifExpiry'), '${p.name} · ${fmtDate(p.expiry!, s.lang)} · ${p.qty} un.'));
+        final at = DateTime(exp.year, exp.month, exp.day - before, 8);
+        items.add((at, s.t('notifExpiry'), '${p.name} · ${fmtDate(exp, s.lang)} · ${fmtQty(p.qty, p.unit)}'));
       }
     }
     for (final b in bills.where((b) => b.isOpen)) {
@@ -82,7 +83,7 @@ class Notifier {
 
     // Hora de enviar um lembrete de pagamento a um cliente (envio com um toque na app).
     for (final r in reminders) {
-      items.add((r.at, s.t('notifSendReminder'), '${r.customer.name} · ${kz(r.bill.remaining)}'));
+      items.add((r.at, s.t('notifSendReminder'), '${r.customer.name} · ${kz(r.remaining)}'));
     }
 
     // iOS só permite 64 alertas agendados: guardamos os mais próximos.

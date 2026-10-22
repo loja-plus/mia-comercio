@@ -6,6 +6,7 @@ import '../services/db.dart';
 import '../services/format.dart';
 import '../state/app_state.dart';
 import '../widgets/common.dart';
+import 'customer_ledger_screen.dart';
 import 'home_shell.dart';
 
 class CustomersScreen extends StatelessWidget {
@@ -48,7 +49,7 @@ class _CustomerRow extends StatelessWidget {
     final overdue = app.openReceivables.any((b) => b.partyId == c.id && daysFromToday(b.due) < 0);
     final near = c.creditLimit > 0 && owes > c.creditLimit * .8;
     return ListTile(
-      onTap: () => openCustomerForm(context, customer: c),
+      onTap: () => openLedger(context, c), // extrato do cliente
       title: Text(c.name, style: const TextStyle(fontWeight: FontWeight.w600)),
       subtitle: Text([c.contact, c.phone, c.email].where((x) => x.isNotEmpty).join(' · ')),
       trailing: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
