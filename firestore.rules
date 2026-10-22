@@ -1,0 +1,88 @@
+rules_version = '2';
+// Mia Comercio — quem pode ver e mudar o quê (plano gratuito, sem servidor).
+// Copie TODO este texto para: Firebase → Firestore → Rules → Publish.
+//
+// Funções (guardadas em users/{uid}):
+//  - admin:   tudo, e gere todas as contas.
+//  - owner:   todos os dados da loja; só gere contas de caixa.
+//  - cashier: vende, vê stock e clientes; não vê contas a pagar nem lucros.
+// Conta com active:false fica sem acesso a nada.
+service cloud.firestore {
+  match /databases/{db}/documents {
+    function signedIn() { return request.auth != null; }
+    function userPath(uid) { return /databases/$(db)/documents/users/$(uid); }
+    function hasProfile() { return signedIn() && exists(userPath(request.auth.uid)); }
+    function me() { return get(userPath(request.auth.uid)).data; }
+    function active() { return hasProfile() && me().get('active', true) == true; }
+    function isAdmin() { return active() && me().role == 'admin'; }
+    function isOwner() { return active() && me().role in ['admin', 'owner']; }
+    function isStaff() { return active() && me().role in ['admin', 'owner', 'cashier']; }
+
+    // Primeira configuração: cria-se UMA vez, junto com o perfil do admin.
+    match /config/setup {
+      allow read: if true;
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.adminCreated == true
+        && getAfter(userPath(request.auth.uid)).data.role == 'admin';
+      allow update, delete: if false;
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isOwner());
+      allow create: if
+        // 1) o primeiro admin (só enquanto config/setup não existe)
+        (signedIn() && request.auth.uid == uid
+          && request.resource.data.role == 'admin'
+          && !exists(/databases/$(db)/documents/config/setup)
+          && getAfter(/databases/$(db)/documents/config/setup).data.uid == uid)
+        // 2) admin cria qualquer conta
+        || (isAdmin() && request.resource.data.role in ['admin', 'owner', 'cashier'])
+        // 3) proprietário cria só caixas
+        || (isOwner() && request.resource.data.role == 'cashier');
+      // Ninguém altera a própria conta (evita ficar sem acesso por engano).
+      allow update: if uid != request.auth.uid && (
+        isAdmin()
+        || (isOwner() && resource.data.role == 'cashier' && request.resource.data.role == 'cashier'));
+      allow delete: if isAdmin() && uid != request.auth.uid;
+    }
+
+    match /shops/{shop} {
+      match /products/{id} {
+        allow read: if isStaff();
+        allow create, delete: if isOwner();
+        // o caixa só pode descontar stock (ao vender)
+        allow update: if isOwner() ||
+          (isStaff() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['qty'])
+                     && request.resource.data.qty < resource.data.qty);
+      }
+      match /customers/{id} {
+        allow read, create, update: if isStaff();
+        allow delete: if isOwner();
+      }
+      match /sales/{id} {
+        allow read, create: if isStaff();
+        allow update, delete: if isOwner();
+      }
+      match /bills/{id} {
+        allow read: if isOwner() || (isStaff() && resource.data.kind == 'receivable');
+        allow create: if isOwner() || (isStaff() && request.resource.data.kind == 'receivable');
+        allow update, delete: if isOwner();
+      }
+      match /outbox/{id} {
+        allow read, create: if isOwner();
+      }
+      match /cashCloses/{id} {
+        allow create: if isStaff();
+        allow read: if isOwner();
+      }
+      match /config/counters {
+        allow read, write: if isStaff();
+      }
+      match /config/settings {
+        allow read: if isStaff();
+        allow write: if isOwner();
+      }
+    }
+  }
+}
