@@ -445,7 +445,7 @@ class _ReceiveSheetState extends State<_ReceiveSheet> {
                     }
                     nav.pop();
                     messenger.showSnackBar(
-                        SnackBar(content: Text(s.t('received')), behavior: SnackBarBehavior.floating));
+                        SnackBar(content: Text(s.t('stockReceived')), behavior: SnackBarBehavior.floating));
                   },
             child: Text(s.t('save')),
           ),
