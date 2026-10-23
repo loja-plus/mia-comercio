@@ -136,7 +136,7 @@ class _NewSaleSheetState extends State<_NewSaleSheet> {
     return showDialog<_Line>(
       context: context,
       builder: (c) => StatefulBuilder(builder: (c, set) {
-        final kg = parseNum(kgCtrl.text) ?? 0;
+        final double kg = parseNum(kgCtrl.text) ?? 0.0;
         final ok = wholeBox ? chosen != null : (kg > 0 && kg <= available + 0.0005);
         final preview = wholeBox
             ? (chosen == null ? 0 : (chosen!.kg * p.wholeBoxPrice).round())

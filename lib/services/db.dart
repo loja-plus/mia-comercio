@@ -147,13 +147,13 @@ class Db {
     for (final l in lines) {
       final p = productsNow[l.productId];
       if (p == null) throw StockException(l.name);
-      qtyDelta[p.id] = (qtyDelta[p.id] ?? 0) - l.qty;
+      qtyDelta[p.id] = (qtyDelta[p.id] ?? 0.0) - l.qty;
       if (!p.byWeight) continue;
       if (l.box != null) {
         if (!p.boxes.any((b) => b.id == l.box!.id)) throw StockException(l.name);
         (removeBoxes[p.id] ??= []).add(l.box!);
       } else {
-        looseWanted[p.id] = (looseWanted[p.id] ?? 0) + l.qty;
+        looseWanted[p.id] = (looseWanted[p.id] ?? 0.0) + l.qty;
       }
     }
 
@@ -163,7 +163,7 @@ class Db {
       if (p.qty + entry.value < -0.0005) throw StockException(p.name);
       if (!p.byWeight) continue;
       var loose = p.looseKg;
-      final want = looseWanted[p.id] ?? 0;
+      final double want = looseWanted[p.id] ?? 0.0;
       final taken = removeBoxes[p.id] ?? [];
       final opened = <MeatBox>[];
       for (final b in p.boxesByExpiry) {
@@ -195,7 +195,7 @@ class Db {
       final id = entry.key;
       batch.update(_products.doc(id), {
         'qty': FieldValue.increment(entry.value),
-        if ((looseDelta[id] ?? 0) != 0) 'looseKg': FieldValue.increment(looseDelta[id]!),
+        if ((looseDelta[id] ?? 0.0) != 0) 'looseKg': FieldValue.increment(looseDelta[id]!),
         if ((removeBoxes[id] ?? []).isNotEmpty) 'boxes': FieldValue.arrayRemove(removeBoxes[id]!.map((b) => b.raw).toList()),
       });
     }

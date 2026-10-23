@@ -178,7 +178,7 @@ class _ProductFormState extends State<_ProductForm> {
   late bool _announce = _old == null;
 
   int _int(TextEditingController c) => int.tryParse(c.text.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0;
-  double _dec(TextEditingController c) => parseNum(c.text) ?? 0;
+  double _dec(TextEditingController c) => parseNum(c.text) ?? 0.0;
 
   Future<void> _save(AppState app) async {
     if (!_form.currentState!.validate()) return;
@@ -189,7 +189,7 @@ class _ProductFormState extends State<_ProductForm> {
       category: _cat.text.trim(),
       barcode: _code.text.trim(),
       unit: _unit,
-      qty: kg ? (_old?.qty ?? 0) : _dec(_qty),
+      qty: kg ? (_old?.qty ?? 0.0) : _dec(_qty),
       looseKg: kg ? _dec(_qty) : 0,
       minQty: _dec(_min),
       cost: _int(_cost),
@@ -350,14 +350,14 @@ class _ReceiveSheetState extends State<_ReceiveSheet> {
   late final _cost = TextEditingController(text: widget.p.cost > 0 ? '${widget.p.cost}' : '');
   DateTime? _exp;
 
-  List<double> get _kgs => _weights.map((c) => parseNum(c.text) ?? 0).where((v) => v > 0).toList();
+  List<double> get _kgs => _weights.map<double>((c) => parseNum(c.text) ?? 0.0).where((v) => v > 0).toList();
 
   @override
   Widget build(BuildContext context) {
     final s = context.read<AppState>().s;
     final p = widget.p;
     final total = _kgs.fold<double>(0, (a, b) => a + b);
-    final ok = p.byWeight ? _kgs.isNotEmpty : (parseNum(_units.text) ?? 0) > 0;
+    final ok = p.byWeight ? _kgs.isNotEmpty : (parseNum(_units.text) ?? 0.0) > 0;
     return Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
       child: ListView(shrinkWrap: true, padding: const EdgeInsets.all(20), children: [

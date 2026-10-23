@@ -2,7 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 DateTime? _dt(dynamic v) => v is Timestamp ? v.toDate() : null;
 int _i(dynamic v) => (v as num?)?.toInt() ?? 0;
-double _n(dynamic v) => (v as num?)?.toDouble() ?? 0;
+double _n(dynamic v) => (v as num?)?.toDouble() ?? 0.0;
 
 /// Uma caixa fechada (ex.: carne), com o peso da etiqueta e a validade.
 class MeatBox {
