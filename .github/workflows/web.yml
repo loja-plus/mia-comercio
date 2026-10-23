@@ -1,15 +1,11 @@
 # Constrói a app web e publica-a de graça no GitHub Pages.
+# Se a construção falhar, o erro fica guardado no ramo "logs" (ficheiro build-log.txt).
 name: Publicar app web
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
-
-permissions:
-  contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
@@ -18,6 +14,10 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -28,16 +28,33 @@ jobs:
           cache: true
 
       - name: Preparar projeto web
-        run: flutter create --platforms=web --org ao.lojaplus --project-name loja_plus .
+        run: flutter create --platforms=web --org ao.lojaplus --project-name loja_plus . 2>&1 | tee -a build-log.txt
 
       - name: Instalar pacotes
-        run: flutter pub get
+        run: |
+          set -o pipefail
+          flutter pub get 2>&1 | tee -a build-log.txt
 
       - name: Construir app web
         run: |
+          set -o pipefail
           REPO="${GITHUB_REPOSITORY#*/}"
           if [[ "$REPO" == *.github.io ]]; then BASE="/"; else BASE="/$REPO/"; fi
-          flutter build web --release --no-web-resources-cdn --base-href "$BASE"
+          flutter build web --release --no-web-resources-cdn --base-href "$BASE" 2>&1 | tee -a build-log.txt
+
+      - name: Guardar o erro (para o assistente ler)
+        if: failure()
+        run: |
+          cp build-log.txt /tmp/build-log.txt || echo "sem registo" > /tmp/build-log.txt
+          git config user.name "loja-plus-bot"
+          git config user.email "loja-plus-bot@users.noreply.github.com"
+          git checkout --orphan logs-tmp
+          git rm -rf --quiet . || true
+          cp /tmp/build-log.txt build-log.txt
+          echo "run ${{ github.run_number }} · commit ${{ github.sha }}" > run.txt
+          git add build-log.txt run.txt
+          git commit -m "build log run ${{ github.run_number }}"
+          git push -f origin HEAD:logs
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
@@ -47,6 +64,9 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
